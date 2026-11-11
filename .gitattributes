@@ -1,0 +1,4 @@
+# bash-скрипт должен быть с LF, иначе на сервере он не запустится; cmd-файл - с CRLF
+*.sh  text eol=lf
+*.cmd text eol=crlf
+*.txt text eol=lf
