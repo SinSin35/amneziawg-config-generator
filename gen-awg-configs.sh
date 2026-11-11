@@ -20,6 +20,7 @@
 #   DNS        "1.1.1.1, 1.0.0.1" по умолчанию - как в приложении
 #   MTU        если задан - добавляется строка MTU в [Interface] (в нативном конфиге приложения её нет)
 set -euo pipefail
+umask 077          # файлы с приватными ключами клиентов доступны только владельцу
 say() { echo "$@" >&2; }
 
 LIST="${1:?Укажите файл со списком клиентов: $0 clients.txt [out_dir]}"
@@ -27,6 +28,7 @@ OUT="${2:-./awg-configs}"
 FORMAT="${3:-${FORMAT:-native}}"
 case "$FORMAT" in native|amnezia|both) ;; *) echo "Формат должен быть native, amnezia или both (получено: $FORMAT)" >&2; exit 1;; esac
 DNS="${DNS:-1.1.1.1, 1.0.0.1}"
+[ -z "${MTU:-}" ] || [[ "$MTU" =~ ^[0-9]{3,4}$ ]] || { echo "MTU должен быть числом (например 1280)" >&2; exit 1; }
 MTU_APP="${MTU:-1376}"   # поле mtu в ключе vpn:// (в приложении по умолчанию 1376; для 3.1 советуют 1280)
 
 # Генерация ключа vpn:// (как ExportController: JSON -> qCompress -> base64url без '=').
@@ -142,6 +144,11 @@ CT=$DIR/clientsTable   # для обоих контейнеров (awg и awg2) 
 CT_JSON=$(dx cat "$CT" 2>/dev/null | tr -d '\r\n' || true)
 CT_BODY=$(printf '%s' "$CT_JSON" | sed 's/^[[:space:]]*\[//; s/\][[:space:]]*$//')
 CT_NEW=""
+# обновляем таблицу только если она пустая или это JSON-массив (старый формат-объект не трогаем)
+CT_OK=1
+if [ -n "$CT_JSON" ] && ! [[ "$CT_JSON" =~ ^[[:space:]]*\[ ]]; then
+  CT_OK=0; say "ВНИМАНИЕ: $CT имеет незнакомый формат - клиенты в приложении под именами не появятся (конфиги будут работать)"
+fi
 
 # --- IP-адреса: как в приложении (последний AllowedIPs + 1) ---
 ip2int() { local IFS=.; set -- $1; echo $(( ($1<<24) + ($2<<16) + ($3<<8) + $4 )); }
@@ -160,9 +167,14 @@ dx cp "$CONF" "$CONF.bak.$(date +%s)"
 
 created=0; skipped=0; PEERS=""
 while IFS= read -r name || [ -n "$name" ]; do
-  name=$(echo "$name" | tr -d '\r' | xargs)
+  name=$(printf '%s' "$name" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [ -z "$name" ] && continue
   case "$name" in \#*) continue;; esac
+  # имя попадает в имя файла, в конфиг сервера и в JSON: допускаем только безопасные символы
+  if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+    say "! $name: недопустимое имя, пропуск (латиница, цифры, . _ -, до 64 символов, первый символ - буква или цифра)"
+    skipped=$((skipped+1)); continue
+  fi
 
   if printf '%s\n' "$SERVER_CONF" | grep -qxF "# $name" || printf '%s' "$CT_JSON" | grep -qF -e "\"clientName\": \"$name\"" -e "\"clientName\":\"$name\""; then
     say "= $name: уже есть на сервере, пропуск (приватный ключ не хранится)"; skipped=$((skipped+1)); continue
@@ -209,8 +221,10 @@ if [ "$created" -gt 0 ]; then
   printf '%s' "$PEERS" | docker exec -i "$CONTAINER" sh -c "cat >> $CONF"
   dx bash -c "$WGBIN syncconf $IFACE <($WGBIN-quick strip $CONF)"
   # 3) записать клиентов в clientsTable, чтобы приложение показывало их по именам
-  if [ -n "$CT_BODY" ]; then NEWTABLE="[${CT_BODY},${CT_NEW}]"; else NEWTABLE="[${CT_NEW}]"; fi
-  printf '%s' "$NEWTABLE" | docker exec -i "$CONTAINER" sh -c "cat > $CT"
+  if [ "$CT_OK" = 1 ]; then
+    if [ -n "$CT_BODY" ]; then NEWTABLE="[${CT_BODY},${CT_NEW}]"; else NEWTABLE="[${CT_NEW}]"; fi
+    printf '%s' "$NEWTABLE" | docker exec -i "$CONTAINER" sh -c "cat > $CT"
+  fi
 fi
 
 say "Готово: создано $created, пропущено $skipped. Конфиги в: $OUT"
