@@ -10,7 +10,7 @@
 # Использование: ./gen-awg-configs.sh clients.txt [папка_вывода] [формат]
 #   формат:  native   - файлы Имя.conf (нативный конфиг AmneziaWG), по умолчанию
 #            amnezia  - файлы Имя.vpn с ключом vpn://... для импорта в приложение AmneziaVPN
-#            both     - и то, и другое
+#            both     - и то, и другое (в подпапках native/ и amnezia/ внутри папки вывода)
 #   Для формата amnezia/both на сервере нужен perl (на Debian/Ubuntu есть по умолчанию).
 #
 # Переменные окружения (необязательно):
@@ -162,7 +162,9 @@ next_ip() {
   LAST=$(int2ip "$n")
 }
 
-mkdir -p "$OUT"
+# при формате both файлы раскладываются по подпапкам: native/ (.conf) и amnezia/ (.vpn)
+if [ "$FORMAT" = both ]; then NDIR="$OUT/native"; ADIR="$OUT/amnezia"; else NDIR="$OUT"; ADIR="$OUT"; fi
+mkdir -p "$NDIR" "$ADIR"
 dx cp "$CONF" "$CONF.bak.$(date +%s)"
 [ -n "$CT_JSON" ] && dx cp "$CT" "$CT.bak.$(date +%s)" || true
 
@@ -184,7 +186,7 @@ while IFS= read -r name || [ -n "$name" ]; do
   fi
   # имя файла: если файл с таким именем уже есть (дубликат имени), добавляем _2, _3...
   fbase="$name"; fn=2
-  while [ -e "$OUT/$fbase.conf" ] || [ -e "$OUT/$fbase.vpn" ]; do fbase="${name}_$fn"; fn=$((fn+1)); done
+  while [ -e "$NDIR/$fbase.conf" ] || [ -e "$ADIR/$fbase.vpn" ]; do fbase="${name}_$fn"; fn=$((fn+1)); done
 
   next_ip; IP=$LAST
   PRIV=$(dx $WGBIN genkey | tr -d '\r\n')
@@ -210,13 +212,13 @@ while IFS= read -r name || [ -n "$name" ]; do
     echo "PersistentKeepalive = $KEEPALIVE"
   )
   if [ "$FORMAT" != amnezia ]; then
-    if [ -n "${MTU:-}" ]; then printf '%s\n' "$NATIVE" | sed "/^DNS = /a MTU = $MTU" > "$OUT/$fbase.conf"
-    else printf '%s\n' "$NATIVE" > "$OUT/$fbase.conf"; fi
+    if [ -n "${MTU:-}" ]; then printf '%s\n' "$NATIVE" | sed "/^DNS = /a MTU = $MTU" > "$NDIR/$fbase.conf"
+    else printf '%s\n' "$NATIVE" > "$NDIR/$fbase.conf"; fi
   fi
   if [ "$FORMAT" != native ]; then
     printf '%s\n' "$NATIVE" | NAME="$name" HOST="$SERVER_IP" PORT="$PORT" CLIENT_IP="$IP" CLIENT_PRIV="$PRIV" CLIENT_PUB="$PUB" \
       SERVER_PUB="$SERVER_PUB" PSK="$PSK" KEEPALIVE="$KEEPALIVE" MTU_APP="$MTU_APP" SUBNET_IP="$SERVER_ADDR" \
-      SUBNET_CIDR="$SUBNET_CIDR" CNAME="$CNAME" DNS="$DNS" perl -e "$PERL_VPN" > "$OUT/$fbase.vpn"
+      SUBNET_CIDR="$SUBNET_CIDR" CNAME="$CNAME" DNS="$DNS" perl -e "$PERL_VPN" > "$ADIR/$fbase.vpn"
   fi
 
   say "+ $name -> $IP (файл: $fbase)"; created=$((created+1))
