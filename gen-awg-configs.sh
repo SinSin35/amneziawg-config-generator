@@ -15,6 +15,7 @@
 #
 # Переменные окружения (необязательно):
 #   FORMAT     то же, что третий аргумент
+#   SKIP_EXISTING  1 = пропускать имена, уже созданные на сервере (по умолчанию, как в приложении, создаётся новый клиент)
 #   CONTAINER  имя контейнера (по умолчанию amnezia-awg2 / amnezia-awg, что найдётся)
 #   SERVER_IP  IP/домен для Endpoint (по умолчанию определяется через ifconfig.me)
 #   DNS        "1.1.1.1, 1.0.0.1" по умолчанию - как в приложении
@@ -176,9 +177,14 @@ while IFS= read -r name || [ -n "$name" ]; do
     skipped=$((skipped+1)); continue
   fi
 
-  if printf '%s\n' "$SERVER_CONF" | grep -qxF "# $name" || printf '%s' "$CT_JSON" | grep -qF -e "\"clientName\": \"$name\"" -e "\"clientName\":\"$name\""; then
-    say "= $name: уже есть на сервере, пропуск (приватный ключ не хранится)"; skipped=$((skipped+1)); continue
+  # Как в приложении: имя не проверяется, каждый запуск создаёт НОВОГО клиента (новые ключи и IP), даже если
+  # клиент с таким именем уже есть. SKIP_EXISTING=1 включает защиту от дублей (пропуск уже созданных имён).
+  if [ "${SKIP_EXISTING:-0}" = 1 ] && { printf '%s\n' "$SERVER_CONF" | grep -qxF "# $name" || printf '%s' "$CT_JSON" | grep -qF -e "\"clientName\": \"$name\"" -e "\"clientName\":\"$name\""; }; then
+    say "= $name: уже есть на сервере, пропуск (SKIP_EXISTING=1)"; skipped=$((skipped+1)); continue
   fi
+  # имя файла: если файл с таким именем уже есть (дубликат имени), добавляем _2, _3...
+  fbase="$name"; fn=2
+  while [ -e "$OUT/$fbase.conf" ] || [ -e "$OUT/$fbase.vpn" ]; do fbase="${name}_$fn"; fn=$((fn+1)); done
 
   next_ip; IP=$LAST
   PRIV=$(dx $WGBIN genkey | tr -d '\r\n')
@@ -204,16 +210,16 @@ while IFS= read -r name || [ -n "$name" ]; do
     echo "PersistentKeepalive = $KEEPALIVE"
   )
   if [ "$FORMAT" != amnezia ]; then
-    if [ -n "${MTU:-}" ]; then printf '%s\n' "$NATIVE" | sed "/^DNS = /a MTU = $MTU" > "$OUT/$name.conf"
-    else printf '%s\n' "$NATIVE" > "$OUT/$name.conf"; fi
+    if [ -n "${MTU:-}" ]; then printf '%s\n' "$NATIVE" | sed "/^DNS = /a MTU = $MTU" > "$OUT/$fbase.conf"
+    else printf '%s\n' "$NATIVE" > "$OUT/$fbase.conf"; fi
   fi
   if [ "$FORMAT" != native ]; then
     printf '%s\n' "$NATIVE" | NAME="$name" HOST="$SERVER_IP" PORT="$PORT" CLIENT_IP="$IP" CLIENT_PRIV="$PRIV" CLIENT_PUB="$PUB" \
       SERVER_PUB="$SERVER_PUB" PSK="$PSK" KEEPALIVE="$KEEPALIVE" MTU_APP="$MTU_APP" SUBNET_IP="$SERVER_ADDR" \
-      SUBNET_CIDR="$SUBNET_CIDR" CNAME="$CNAME" DNS="$DNS" perl -e "$PERL_VPN" > "$OUT/$name.vpn"
+      SUBNET_CIDR="$SUBNET_CIDR" CNAME="$CNAME" DNS="$DNS" perl -e "$PERL_VPN" > "$OUT/$fbase.vpn"
   fi
 
-  say "+ $name -> $IP"; created=$((created+1))
+  say "+ $name -> $IP (файл: $fbase)"; created=$((created+1))
 done < "$LIST"
 
 if [ "$created" -gt 0 ]; then
